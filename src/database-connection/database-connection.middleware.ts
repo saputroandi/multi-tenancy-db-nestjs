@@ -1,15 +1,28 @@
-import { Injectable, NestMiddleware } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { Injectable, NestMiddleware, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { RedisCacheService } from 'src/redis-cache/redis-cache.service';
 import { DataSource, DataSourceOptions } from 'typeorm';
 
 @Injectable()
-export class DatabaseconnectionMiddleware implements NestMiddleware {
-  constructor(private config: ConfigService) {}
+export class DatabaseConnectionMiddleware implements NestMiddleware {
+  constructor(
+    private config: ConfigService,
+    private readonly redisCacheService: RedisCacheService,
+  ) {}
   async use(req: any, res: any, next: () => void) {
     let resDs: DataSource = undefined;
     const tenant = req.headers['x-tenant-id'];
 
-    if (tenant) {
+    if (!tenant) {
+      return next();
+    }
+
+    const connection = await this.redisCacheService.getConnectionFromCache(
+      tenant,
+    );
+
+    if (!connection) {
       const connectionOptions: DataSourceOptions = {
         type: 'postgres',
         host: this.config.get('POSTGRES_HOST'),
@@ -26,12 +39,19 @@ export class DatabaseconnectionMiddleware implements NestMiddleware {
 
       try {
         resDs = await dbConnection.initialize();
+        await this.redisCacheService.saveConnectionToCache(
+          tenant,
+          resDs,
+          60 * 60,
+        );
       } catch (e) {
         console.error('Error during Data Source initialization', e);
       }
-      // req['tenantConnection'] = conn;
+    } else {
+      resDs = connection;
     }
-    console.log({ body: resDs });
+
+    req['tenantConnection'] = resDs;
     next();
   }
 }
